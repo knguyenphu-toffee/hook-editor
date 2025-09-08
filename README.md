@@ -14,4 +14,10 @@ hook-editor/
 drop each component in designated folder
 ```
 
+##requirements.txt
+```
+gspread
+google-auth
+```
+
 Place credentials.json into assets folder
