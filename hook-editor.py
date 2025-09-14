@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-TikTok Video Editor with Google Sheets Integration
+TikTok Video Editor with Google Sheets Integration and Random Audio Replacement
 Rapidly edit videos by cutting off first 0.5s and last 0.25s, adding overlay text from Google Sheets
 Uses FFmpeg for professional text overlay with custom font support
 Automatically selects overlay text based on video type from Google Sheets data
+Replaces audio with random .mp3 files from tiktok-audio folder at -18dB volume
 """
 
 import os
@@ -29,6 +30,7 @@ class TikTokEditor:
         self.script_dir = Path(__file__).parent
         self.input_dir = self.script_dir / "input-videos"
         self.output_dir = self.script_dir / "output-videos"
+        self.audio_dir = self.script_dir / "tiktok-audio"  # New audio directory
         self.font_path = self.script_dir / "assets" / "TikTokDisplay-Medium.ttf"  # Font in assets folder
         self.credentials_path = self.script_dir / "assets" / "credentials.json"  # Google Sheets credentials
         
@@ -42,8 +44,12 @@ class TikTokEditor:
         self.start_trim = 0.5  # Cut off first 0.5 seconds
         self.end_trim = 0.25   # Cut off last 0.25 seconds
         
-        # Supported video file types
+        # Audio settings
+        self.audio_volume = "-18dB"  # Audio volume setting
+        
+        # Supported file types
         self.video_extensions = {'.mp4', '.avi', '.mov', '.mkv', '.flv', '.wmv', '.webm'}
+        self.audio_extensions = {'.mp3'}  # Supported audio extensions
         
         # Valid video types (lowercase for filename matching)
         self.valid_types = {'romantic', 'crying', 'confused', 'surprised', 'sad'}
@@ -72,6 +78,30 @@ class TikTokEditor:
         print("✅ Google Sheets libraries found")
         
         return True
+    
+    def find_audio_files(self):
+        """Find all .mp3 audio files in the tiktok-audio directory"""
+        if not self.audio_dir.exists():
+            return []
+            
+        audio_files = []
+        for file_path in self.audio_dir.iterdir():
+            if file_path.suffix.lower() in self.audio_extensions:
+                audio_files.append(file_path)
+        
+        return audio_files
+    
+    def select_random_audio(self):
+        """Select a random audio file from the tiktok-audio directory"""
+        audio_files = self.find_audio_files()
+        
+        if not audio_files:
+            print(f"❌ No .mp3 audio files found in {self.audio_dir}")
+            return None
+        
+        selected_audio = random.choice(audio_files)
+        print(f"🎵 Selected random audio: {selected_audio.name}")
+        return selected_audio
     
     def setup_google_sheets(self):
         """Set up Google Sheets connection"""
@@ -345,9 +375,9 @@ class TikTokEditor:
         wrapped = textwrap.fill(text, width=chars_per_line, break_long_words=False)
         return wrapped
     
-    def edit_video_with_text(self, video_path, overlay_text, trimmed_duration):
-        """Edit video with FFmpeg text overlay and trimming"""
-        print("🎬 Processing video with text overlay and trimming...")
+    def edit_video_with_text(self, video_path, overlay_text, trimmed_duration, audio_path=None):
+        """Edit video with FFmpeg text overlay, trimming, and audio replacement"""
+        print("🎬 Processing video with text overlay, trimming, and audio replacement...")
         
         # Wrap text for margins (5% on each side)
         wrapped_text = self.wrap_text_for_margins(overlay_text, margin_percent=5)
@@ -382,32 +412,57 @@ class TikTokEditor:
             f"drawtext="
             f"textfile='{str(text_file)}'"
             f"{font_param}"
-            f":fontsize=30"  # 75pt font size
+            f":fontsize=28"  # 28pt font size
             f":fontcolor=white"
             f":borderw=2"  # Black border thickness
             f":bordercolor=black" 
             f":x=(w-text_w)/2"  # Center horizontally
-            f":y=(h-text_h)*{rand_font_height}"  # Center vertically (top of text centered)
+            f":y=(h-text_h)*{rand_font_height}"  # Position vertically
             f":text_align=C"  # Center align text
             f":enable='between(t,0,{trimmed_duration})'"  # Show for full trimmed duration
         )
         
-        # FFmpeg command: skip first 0.5s, cut to trimmed duration, add text overlay
-        cmd = [
-            'ffmpeg',
-            '-ss', str(self.start_trim),  # Skip first 0.5 seconds
-            '-i', str(video_path),
-            '-vf', f"[in]{drawtext_filter}[out]",
-            '-t', str(trimmed_duration),  # Duration after trimming
-            '-c:v', 'libx264',
-            '-preset', 'fast',
-            '-crf', '23',
-            '-c:a', 'aac',
-            '-b:a', '192k',
-            '-movflags', '+faststart',
-            '-y',  # Overwrite output file
-            str(output_path)
-        ]
+        # Build FFmpeg command with audio replacement
+        if audio_path and audio_path.exists():
+            # Command with audio replacement
+            cmd = [
+                'ffmpeg',
+                '-ss', str(self.start_trim),  # Skip first 0.5 seconds
+                '-i', str(video_path),        # Video input
+                '-i', str(audio_path),        # Audio input
+                '-vf', f"{drawtext_filter}",  # Video filters
+                '-af', f'volume={self.audio_volume}',  # Audio filter for volume
+                '-t', str(trimmed_duration),  # Duration after trimming
+                '-c:v', 'libx264',
+                '-preset', 'fast',
+                '-crf', '23',
+                '-c:a', 'aac',
+                '-b:a', '192k',
+                '-map', '0:v',  # Map video from first input (original video)
+                '-map', '1:a',  # Map audio from second input (new audio file)
+                '-movflags', '+faststart',
+                '-y',  # Overwrite output file
+                str(output_path)
+            ]
+            print(f"🎵 Replacing audio with: {audio_path.name} at {self.audio_volume}")
+        else:
+            # Fallback command without audio replacement (original audio)
+            cmd = [
+                'ffmpeg',
+                '-ss', str(self.start_trim),  # Skip first 0.5 seconds
+                '-i', str(video_path),
+                '-vf', f"{drawtext_filter}",
+                '-t', str(trimmed_duration),  # Duration after trimming
+                '-c:v', 'libx264',
+                '-preset', 'fast',
+                '-crf', '23',
+                '-c:a', 'aac',
+                '-b:a', '192k',
+                '-movflags', '+faststart',
+                '-y',  # Overwrite output file
+                str(output_path)
+            ]
+            print("⚠️  Using original audio (no replacement audio available)")
         
         try:
             # Run FFmpeg with progress monitoring
@@ -436,7 +491,7 @@ class TikTokEditor:
             else:
                 print(f"\n❌ FFmpeg error occurred")
                 # Try fallback without custom font
-                return self.edit_video_fallback(video_path, overlay_text, trimmed_duration)
+                return self.edit_video_fallback(video_path, overlay_text, trimmed_duration, audio_path)
                 
         except Exception as e:
             print(f"\n❌ Error: {str(e)}")
@@ -445,7 +500,7 @@ class TikTokEditor:
                 text_file.unlink()
             return False
     
-    def edit_video_fallback(self, video_path, overlay_text, trimmed_duration):
+    def edit_video_fallback(self, video_path, overlay_text, trimmed_duration, audio_path=None):
         """Fallback method without custom font"""
         print("🔄 Retrying with simplified text overlay...")
         
@@ -474,21 +529,43 @@ class TikTokEditor:
             f":enable='between(t,0,{trimmed_duration})'"
         )
         
-        cmd = [
-            'ffmpeg',
-            '-ss', str(self.start_trim),  # Skip first 0.5 seconds
-            '-i', str(video_path),
-            '-vf', f"{drawtext_filter}",
-            '-t', str(trimmed_duration),  # Duration after trimming
-            '-c:v', 'libx264',
-            '-preset', 'fast',
-            '-crf', '23',
-            '-c:a', 'aac',
-            '-b:a', '192k',
-            '-movflags', '+faststart',
-            '-y',
-            str(output_path)
-        ]
+        # Build command with or without audio replacement
+        if audio_path and audio_path.exists():
+            cmd = [
+                'ffmpeg',
+                '-ss', str(self.start_trim),  # Skip first 0.5 seconds
+                '-i', str(video_path),
+                '-i', str(audio_path),
+                '-vf', f"{drawtext_filter}",
+                '-af', f'volume={self.audio_volume}',
+                '-t', str(trimmed_duration),  # Duration after trimming
+                '-c:v', 'libx264',
+                '-preset', 'fast',
+                '-crf', '23',
+                '-c:a', 'aac',
+                '-b:a', '192k',
+                '-map', '0:v',
+                '-map', '1:a',
+                '-movflags', '+faststart',
+                '-y',
+                str(output_path)
+            ]
+        else:
+            cmd = [
+                'ffmpeg',
+                '-ss', str(self.start_trim),  # Skip first 0.5 seconds
+                '-i', str(video_path),
+                '-vf', f"{drawtext_filter}",
+                '-t', str(trimmed_duration),  # Duration after trimming
+                '-c:v', 'libx264',
+                '-preset', 'fast',
+                '-crf', '23',
+                '-c:a', 'aac',
+                '-b:a', '192k',
+                '-movflags', '+faststart',
+                '-y',
+                str(output_path)
+            ]
         
         try:
             result = subprocess.run(cmd, capture_output=True, text=True)
@@ -502,41 +579,65 @@ class TikTokEditor:
                 return True
             else:
                 print("❌ Fallback failed, creating video without text...")
-                return self.edit_video_no_text(video_path, trimmed_duration)
+                return self.edit_video_no_text(video_path, trimmed_duration, audio_path)
         except Exception as e:
             print(f"❌ Fallback error: {str(e)}")
             if text_file.exists():
                 text_file.unlink()
             return False
     
-    def edit_video_no_text(self, video_path, trimmed_duration):
-        """Edit video without text overlay (trim only)"""
+    def edit_video_no_text(self, video_path, trimmed_duration, audio_path=None):
+        """Edit video without text overlay (trim only and optional audio replacement)"""
         print("⚠️  Creating video without text overlay...")
         
         # Generate output filename
         input_name = video_path.stem
         output_path = self.output_dir / f"{input_name}_edited.mp4"
         
-        cmd = [
-            'ffmpeg',
-            '-ss', str(self.start_trim),  # Skip first 0.5 seconds
-            '-i', str(video_path),
-            '-t', str(trimmed_duration),  # Duration after trimming
-            '-c:v', 'libx264',
-            '-preset', 'fast',
-            '-crf', '23',
-            '-c:a', 'aac',
-            '-b:a', '192k',
-            '-movflags', '+faststart',
-            '-y',
-            str(output_path)
-        ]
+        # Build command with or without audio replacement
+        if audio_path and audio_path.exists():
+            cmd = [
+                'ffmpeg',
+                '-ss', str(self.start_trim),  # Skip first 0.5 seconds
+                '-i', str(video_path),
+                '-i', str(audio_path),
+                '-af', f'volume={self.audio_volume}',
+                '-t', str(trimmed_duration),  # Duration after trimming
+                '-c:v', 'libx264',
+                '-preset', 'fast',
+                '-crf', '23',
+                '-c:a', 'aac',
+                '-b:a', '192k',
+                '-map', '0:v',
+                '-map', '1:a',
+                '-movflags', '+faststart',
+                '-y',
+                str(output_path)
+            ]
+        else:
+            cmd = [
+                'ffmpeg',
+                '-ss', str(self.start_trim),  # Skip first 0.5 seconds
+                '-i', str(video_path),
+                '-t', str(trimmed_duration),  # Duration after trimming
+                '-c:v', 'libx264',
+                '-preset', 'fast',
+                '-crf', '23',
+                '-c:a', 'aac',
+                '-b:a', '192k',
+                '-movflags', '+faststart',
+                '-y',
+                str(output_path)
+            ]
         
         try:
             result = subprocess.run(cmd, capture_output=True, text=True)
             if result.returncode == 0:
                 print(f"✅ Video created successfully: {output_path.name}")
-                print("⚠️  Note: Text overlay was omitted due to processing issues")
+                if audio_path:
+                    print("⚠️  Note: Text overlay was omitted but audio was replaced")
+                else:
+                    print("⚠️  Note: Text overlay was omitted and original audio kept")
                 return True
             else:
                 print("❌ Video creation failed")
@@ -575,6 +676,25 @@ class TikTokEditor:
         except Exception as e:
             print(f"❌ Error reading Google Sheets statistics: {str(e)}")
     
+    def show_audio_statistics(self):
+        """Display statistics about available audio files"""
+        audio_files = self.find_audio_files()
+        
+        print(f"\n🎵 Audio Files Statistics:")
+        print("=" * 35)
+        print(f"📁 Audio directory: {self.audio_dir}")
+        print(f"🎶 Available audio files: {len(audio_files)}")
+        print(f"🔊 Audio volume setting: {self.audio_volume}")
+        
+        if audio_files:
+            print(f"📝 Available audio files:")
+            for i, audio_file in enumerate(audio_files[:5], 1):  # Show first 5
+                print(f"   {i}. {audio_file.name}")
+            if len(audio_files) > 5:
+                print(f"   ... and {len(audio_files) - 5} more")
+        else:
+            print("⚠️  No .mp3 files found in tiktok-audio folder!")
+    
     def process_single_video(self, video_file):
         """Process a single video file"""
         print(f"\n{'='*60}")
@@ -596,6 +716,9 @@ class TikTokEditor:
             print(f"❌ No available overlay text for type '{video_type}'")
             return False
         
+        # Select random audio file
+        audio_path = self.select_random_audio()
+        
         # Get video info and calculate trimming
         original_duration = self.get_video_duration(video_file)
         trimmed_duration = self.calculate_trimmed_duration(original_duration)
@@ -603,6 +726,9 @@ class TikTokEditor:
         print(f"📊 Original duration: {original_duration:.1f}s")
         print(f"✂️  Trimming: -{self.start_trim}s (start) and -{self.end_trim}s (end)")
         print(f"🎯 Final duration: {trimmed_duration:.1f}s")
+        
+        if audio_path:
+            print(f"🔊 Audio will be set to: {self.audio_volume}")
         
         # Check if video is long enough for trimming
         if original_duration < (self.start_trim + self.end_trim + 0.5):
@@ -616,8 +742,8 @@ class TikTokEditor:
         
         print(f"🔄 Starting video processing...")
         
-        # Process the video with text and trimming
-        success = self.edit_video_with_text(video_file, overlay_text, trimmed_duration)
+        # Process the video with text, trimming, and audio replacement
+        success = self.edit_video_with_text(video_file, overlay_text, trimmed_duration, audio_path)
         
         if success:
             print(f"✅ Successfully processed: {video_file.name}")
@@ -628,7 +754,7 @@ class TikTokEditor:
     
     def run(self):
         """Main execution function"""
-        print("🎵 TikTok Video Editor with Google Sheets Integration - Batch Mode (with Trimming)")
+        print("🎵 TikTok Video Editor with Google Sheets Integration and Audio Replacement")
         print("=" * 80)
         
         # Check dependencies
@@ -653,6 +779,10 @@ class TikTokEditor:
         # Ensure directories exist
         self.input_dir.mkdir(parents=True, exist_ok=True)
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.audio_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Show audio statistics
+        self.show_audio_statistics()
         
         # Find all video files
         video_files = self.find_all_video_files()
@@ -668,11 +798,13 @@ class TikTokEditor:
             type_info = f" ({video_type})" if video_type else " (⚠️ unknown type)"
             print(f"   {i}. {video_file.name}{type_info}")
         
-        # Show trimming settings
-        print(f"\n✂️  Trimming settings:")
+        # Show processing settings
+        print(f"\n✂️  Processing settings:")
         print(f"   • Remove first {self.start_trim}s of each video")
         print(f"   • Remove last {self.end_trim}s of each video")
         print(f"   • Total reduction: {self.start_trim + self.end_trim}s per video")
+        print(f"   • Audio volume: {self.audio_volume}")
+        print(f"   • Random audio replacement from tiktok-audio folder")
         
         # Check for custom font
         if self.font_path.exists():
@@ -719,6 +851,7 @@ class TikTokEditor:
             print(f"   • Professional text styling (30pt font)")
             print(f"   • White text with black border")
             print(f"   • Centered positioning with 5% margins")
+            print(f"   • Random audio replacement at {self.audio_volume}")
             print(f"   • Original filenames preserved")
             print(f"   • Google Sheets automatically updated")
         
@@ -726,7 +859,7 @@ class TikTokEditor:
 
 def main():
     """Entry point"""
-    print("Setting up TikTok Video Editor with Google Sheets...")
+    print("Setting up TikTok Video Editor with Google Sheets and Audio Replacement...")
     
     # Check if required packages are available
     if not GOOGLE_SHEETS_AVAILABLE:
